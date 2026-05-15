@@ -4,7 +4,11 @@ Assignment-grade design notes for a multi-tenant inventory SaaS: database-per-te
 
 ---
 
-## 1. Multi-tenant isolation: database-per-tenant
+## 1. Multi-tenant isolation
+
+### Decision
+
+**Chosen approach: separate database per tenant** (database-per-tenant on one MongoDB cluster).
 
 | Database | Purpose | Collections |
 |----------|---------|-------------|
@@ -20,16 +24,66 @@ POST /api/auth/login  → global DB only
 GET  /api/dashboard   → JWT → attachTenantDb → tenant DB aggregations
 ```
 
-### Why database-per-tenant (vs row-level `tenantId`)
+### Pros (database-per-tenant — why we chose it)
 
-| | Database-per-tenant | Single DB + `tenantId` filter |
-|--|---------------------|-------------------------------|
-| Isolation | Strong — wrong query cannot read another DB | Depends on every query including filter |
-| Index size | Smaller per tenant | Grows with all tenants |
-| Backup/restore | Per company | All-or-nothing |
-| Ops cost | Migrations/index sync per tenant DB | One migration |
+- **Strong isolation** — A bug or missing filter cannot read or write another tenant’s collections; isolation is enforced at the database boundary.
+- **Smaller working sets** — Each tenant DB only holds that company’s SKUs/orders, which helps query performance and cache locality (relevant for the &lt;2s dashboard with 10k+ products **per tenant**).
+- **Per-tenant operations** — Backup, restore, export, or archive one company without touching others.
+- **Independent scaling path** — High-volume tenants can later move to dedicated clusters or shards without redesigning the whole platform.
+- **Aligns with MongoDB guidance** — Common pattern for SaaS when tenant count is moderate and isolation is a priority.
 
-**Trade-off:** Dynamic DB routing and per-tenant index sync (`syncTenantIndexes` on first access). Cross-tenant reporting is out of scope.
+### Cons (database-per-tenant — trade-offs we accept)
+
+- **Higher application complexity** — Every authenticated request must resolve the correct DB (`attachTenantDb`, `getTenantModels(conn)`).
+- **Migrations are per tenant** — Schema/index changes must run across all tenant databases (we use `syncTenantIndexes` on first access; production needs a migration runner).
+- **More databases to manage** — Connection caching helps, but ops tooling must account for N tenant DBs.
+- **Cross-tenant analytics** — Platform-wide reporting across companies is harder (not required for this assignment).
+- **Provisioning step** — New companies need DB creation/index sync (`POST /api/auth/register` + `ensureTenantDatabase`).
+
+---
+
+### Alternatives considered
+
+#### Option A — Row-level tenancy (single DB, `tenantId` on every document)
+
+**Pros**
+
+- Simplest application code — one connection, one set of models; always filter by `tenantId`.
+- Single migration — indexes and schema change once for all tenants.
+- Easy cross-tenant admin/reporting if ever needed.
+
+**Cons**
+
+- **Weakest isolation** — One forgotten `tenantId` in a query can leak data across companies.
+- **Larger indexes and collections** — All tenants share the same `skus` / `orders` collections; hot tenants affect everyone.
+- **Risk under load** — Concurrent writes from many tenants contend on the same collections.
+
+**Why not chosen:** Data isolation is a core assignment requirement; row-level is fast to build but too easy to get wrong in production.
+
+---
+
+#### Option B — Schema-based tenancy (e.g. one DB, collection prefix or namespace per tenant)
+
+In MongoDB this often means **one database per tenant** (what we use) or non-standard patterns like **prefixed collection names** (`acme_products`, `globex_products`) inside a shared database.
+
+**Pros**
+
+- Still one cluster connection string; tenants can be grouped logically.
+- Can feel lighter than “many databases” on platforms that charge per DB (depends on host).
+
+**Cons**
+
+- **Non-idiomatic in MongoDB** — Unlike PostgreSQL `schema`, MongoDB has no first-class schema namespace; prefixes are convention-only and easy to mis-apply.
+- **Same leakage risk as row-level** if prefix/filter is omitted.
+- **Messy migrations** — Renaming or syncing many prefixed collections is awkward.
+
+**Why not chosen:** MongoDB’s natural isolation unit is the **database**, not a schema. We use real separate databases rather than emulating schemas with naming hacks.
+
+---
+
+#### Option C — Separate database per tenant ✅ **chosen**
+
+See **Pros** and **Cons** above. This is the implemented model (`tenantstock_global` + `tenant_<id>`).
 
 ---
 
