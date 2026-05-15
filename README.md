@@ -101,8 +101,8 @@ curl -s -X POST http://localhost:4000/api/auth/register \
 ## Build
 
 ```bash
-cd backend && npm run build
-cd frontend && npm run build
+cd backend && npm run seed && npm run dev
+cd frontend && npm run dev
 ```
 
 ## License
