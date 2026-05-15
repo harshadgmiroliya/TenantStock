@@ -132,11 +132,11 @@ export async function cancelSalesOrder(
               {
                 tenantId,
                 skuId: line.skuId,
-                type: "adjustment",
+                type: "return",
                 quantityDelta: fulfilled,
                 refType: "SalesOrder",
                 refId: order._id,
-                note: "Order cancellation restock",
+                note: "Sales order cancellation — stock returned",
               },
             ],
             { session }

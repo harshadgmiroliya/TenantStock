@@ -167,9 +167,46 @@ PO receipts use `$inc` on stock within the same transaction pattern (`poService`
 | `Sku` / `ProductVariant` | Stock-bearing units |
 | `Supplier`, `PurchaseOrder` | Inbound; statuses `Draft` → `Sent` → `Confirmed` → `Received` |
 | `SalesOrder` | Outbound; `pending` / `partial` / `fulfilled` / `cancelled` |
-| `StockMovement` | Ledger (`sale`, `purchase`, `adjustment`); notes can record before/after |
+| `StockMovement` | Immutable ledger of quantity changes — see **§5.1** |
 
 **Smart low-stock:** `stock < reorderPoint` **and** `stock + inboundOpenPO < reorderPoint`.
+
+---
+
+### 5.1 Stock movement ledger (assignment requirement)
+
+> **Track all stock movements (purchase / sale / return / adjustment) with timestamps.**
+
+Every change to on-hand quantity is recorded in `stockmovements` (tenant DB). Documents are **append-only** in normal flows: we do not edit or delete ledger rows after write. Mongoose **`timestamps: true`** adds `createdAt` and `updatedAt` on each row; **`createdAt`** is the audit timeline field (indexed, newest-first queries).
+
+#### Movement types
+
+| Type | When it is written | `quantityDelta` | Typical `refType` |
+|------|-------------------|-----------------|-------------------|
+| **purchase** | PO line received (`poService.receivePurchaseOrderLines`) | Positive (+qty received) | `Receipt` / PO id |
+| **sale** | Sales order fulfilled (`orderService.fulfillSalesOrder`) | Negative (−qty sold) | `SalesOrder` |
+| **return** | Sales order cancelled after partial/full fulfill — stock put back (`orderService.cancelSalesOrder`) | Positive (+qty returned) | `SalesOrder` |
+| **adjustment** | Manual correction via `POST /api/stock-movements/adjustment` (Owner/Manager) | Positive or negative | `Manual` |
+
+Each row also stores: `tenantId`, `skuId`, optional `refId`, and `note` (e.g. PO price, before/after hints on fulfill).
+
+#### Timestamps & timeline
+
+- **Per-event timeline:** `GET /api/stock-movements?limit=100` returns movements sorted by **`createdAt` descending** (chronological audit trail for reviewers/API clients).
+- **Dashboard 7-day chart:** aggregated **net** `quantityDelta` per calendar day — summary view, not a replacement for the full ledger.
+- **Top sellers (30d):** aggregation on `type: "sale"` filtered by `createdAt`.
+
+Indexes: `{ createdAt: -1 }`, `{ skuId: 1, createdAt: -1 }` for fast history per SKU.
+
+#### Why a ledger (not only `Sku.stock`)
+
+- **Auditability** — who changed what and when (assignment “track all movements”).
+- **Analytics** — top sellers and movement graph read from history, not guessed from current stock.
+- **Integrity** — stock updates and movement inserts happen in the **same MongoDB transaction** on fulfill/receive/cancel/adjustment so counts and history stay aligned.
+
+#### UI note
+
+Inventory page shows **current** SKU levels; the **movement timeline** is exposed via API (and seed data). A dedicated “Stock movements” table in the UI is optional; reviewers can verify via `GET /api/stock-movements` or MongoDB `stockmovements` collection.
 
 ---
 
@@ -251,7 +288,8 @@ Ideal at scale: `modules/inventory`, `modules/orders`, `core/tenant`, `core/auth
 - No automated cross-tenant migration runner (run index sync per tenant or admin script).
 - Product list APIs: basic pagination; not cursor-based infinite scroll.
 - Register UI on frontend optional; API is ready.
-- Stock movement schema uses `note` for before/after in some paths; dedicated `stockBefore`/`stockAfter` fields possible.
+- Dedicated frontend “Stock movements” timeline page not built; ledger available at `GET /api/stock-movements`.
+- Stock movement `note` may include before/after text on fulfill; dedicated `stockBefore`/`stockAfter` fields possible.
 - Load testing script for concurrent fulfill not included in repo.
 - `KEYS` in Redis `cacheDel` only used for glob patterns; single-key delete uses `DEL`.
 
