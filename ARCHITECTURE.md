@@ -173,11 +173,36 @@ PO receipts use `$inc` on stock within the same transaction pattern (`poService`
 
 ---
 
-## 6. Real-time UI
+## 6. Real-time UI (Socket.io)
 
-- Socket.io namespace on the API server; handshake JWT → join `tenant:<tenantId>`.
-- Events: `inventory:updated`, `salesOrder:created`, `purchaseOrder:updated`.
-- Dev frontend connects to `http://127.0.0.1:4000` directly (avoids Vite WS proxy `ECONNRESET`).
+The assignment requires **real-time updates** when inventory or orders change. We use Socket.io for **push notifications** so open screens refresh without manual reload or constant polling.
+
+### When we use Socket.io (triggers)
+
+Emit to the tenant room `tenant:<tenantId>` after a **successful write** that other users should see quickly:
+
+| Event | Emitted when | Why Socket.io |
+|-------|----------------|---------------|
+| `inventory:updated` | Sales order fulfill/cancel, PO receipt, SKU stock edit, manual stock movement | Stock levels and low-stock alerts must update on Dashboard / Inventory for all logged-in users |
+| `salesOrder:created` | New sales order created | Sales Orders list should show new rows for managers/staff on other tabs |
+| `purchaseOrder:created` | New PO created | Purchase Orders list stays in sync |
+| `purchaseOrder:updated` | PO status change or line receipt | PO workflow and inbound quantities affect low-stock logic |
+
+**Frontend reaction:** pages subscribe via `SocketContext` → `lastInventoryEvent` timestamp bumps → `useEffect` refetches REST data (Dashboard, Inventory, Sales Orders, Purchase Orders). Socket.io carries a **signal to refresh**, not the full payload (keeps messages small; source of truth stays MongoDB).
+
+### When we do **not** need Socket.io
+
+- **Login / register / read-only GET** — normal HTTP is enough.
+- **Single-user, same-tab edits** — the API response already returns updated data; socket is for **other clients** in the same tenant.
+- **Historical reports** — load once via REST; no live stream required.
+- **If real-time were dropped** — acceptable fallback: poll `/api/dashboard/summary` every N seconds (worse UX and more load; Socket.io is the assignment-aligned choice).
+
+### How it works
+
+- Server: Socket.io on the HTTP server; JWT in `handshake.auth.token` → join `tenant:<tenantId>` (same isolation as REST).
+- Client: connects after login with bearer token; listens for the events above.
+- Dev: frontend may connect directly to `http://127.0.0.1:4000` (see `frontend/src/config/socket.ts`) to avoid Vite WebSocket proxy `ECONNRESET`.
+- Production multi-node: use `@socket.io/redis-adapter` so emits reach all API instances (not implemented in this repo; noted in deploy sketch).
 
 ---
 
