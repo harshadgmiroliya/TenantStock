@@ -2,7 +2,7 @@
 
 Multi-tenant inventory SaaS for the **MERN Stack Developer** technical assignment: React + Express + MongoDB, JWT roles, Socket.io, purchase/sales orders, dashboard analytics (&lt;2s design target at 10k+ SKUs), and **atomic stock** under concurrency.
 
-UI uses **Ant Design** and **Ant Design Charts** (the PDF does not require a specific component library).
+UI uses **Ant Design** and **Ant Design Charts**.
 
 ## Repository layout
 
